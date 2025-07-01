@@ -1,46 +1,44 @@
 #!/bin/bash
 
-# ========== CONFIG ==========
+# ======== CONFIG =========
 KC_URL="http://localhost:8080"
 REALM="myrealm"
 ADMIN_USER="admin"
 ADMIN_PASS="admin"
-NEW_USERS=("client-1-user-1" "client-1-user-2" "client-2-user-1" "client-2-user-2")
-ROLES=("role-1" "role-2")
+REAL_CLIENT="real-client"
 CLIENTS=("client-1" "client-2")
-REAL_CLIENT_ID="real-client"
-# ============================
+ROLES=("role-1" "role-2" "role-3" "role-4")
+# =========================
 
 # Random password generator
 random_password() {
-  tr -dc A-Za-z0-9 </dev/urandom | head -c 16
+  tr -dc A-Za-z0-9 </dev/urandom | head -c 12
 }
 
 # Get admin token
 get_admin_token() {
   curl -s -X POST "$KC_URL/realms/master/protocol/openid-connect/token" \
     -H "Content-Type: application/x-www-form-urlencoded" \
-    -d "grant_type=password" \
-    -d "client_id=admin-cli" \
-    -d "username=$ADMIN_USER" \
-    -d "password=$ADMIN_PASS" | jq -r .access_token
+    -d "grant_type=password" -d "client_id=admin-cli" \
+    -d "username=$ADMIN_USER" -d "password=$ADMIN_PASS" \
+  | jq -r .access_token
 }
 
 TOKEN=$(get_admin_token)
 
-# Helper to get client UUID by clientId
+# Get client UUID by clientId
 get_client_id() {
   local client_id=$1
   curl -s -H "Authorization: Bearer $TOKEN" \
     "$KC_URL/admin/realms/$REALM/clients?clientId=$client_id" | jq -r '.[0].id'
 }
 
-# Create client
+# Create client with random secret
 create_client() {
   local client_id=$1
   local secret=$(random_password)
 
-  curl -s -o /dev/null -w "%{http_code}" -X POST "$KC_URL/admin/realms/$REALM/clients" \
+  curl -s -o /dev/null -X POST "$KC_URL/admin/realms/$REALM/clients" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -d "{
       \"clientId\": \"$client_id\",
@@ -52,11 +50,10 @@ create_client() {
   echo "$client_id secret: $secret"
 }
 
-# Create role under real-client
-create_client_role() {
-  local client_id=$1
-  local role_name=$2
-  local client_uuid=$(get_client_id "$client_id")
+# Create roles in real-client
+create_role() {
+  local client_uuid=$(get_client_id "$REAL_CLIENT")
+  local role_name=$1
 
   curl -s -o /dev/null -X POST "$KC_URL/admin/realms/$REALM/clients/$client_uuid/roles" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -86,7 +83,8 @@ create_user() {
 # Get user ID
 get_user_id() {
   local username=$1
-  curl -s -H "Authorization: Bearer $TOKEN" "$KC_URL/admin/realms/$REALM/users?username=$username" | jq -r '.[0].id'
+  curl -s -H "Authorization: Bearer $TOKEN" \
+    "$KC_URL/admin/realms/$REALM/users?username=$username" | jq -r '.[0].id'
 }
 
 # Assign role from real-client to user
@@ -94,7 +92,7 @@ assign_role_to_user() {
   local username=$1
   local role_name=$2
   local user_id=$(get_user_id "$username")
-  local client_uuid=$(get_client_id "$REAL_CLIENT_ID")
+  local client_uuid=$(get_client_id "$REAL_CLIENT")
 
   local role_json=$(curl -s -H "Authorization: Bearer $TOKEN" \
     "$KC_URL/admin/realms/$REALM/clients/$client_uuid/roles/$role_name")
@@ -104,7 +102,7 @@ assign_role_to_user() {
     -d "[$role_json]"
 }
 
-# Add protocol mapper to external clients
+# Add protocol mapper to pull real-client roles into token
 add_role_mapper_to_client() {
   local client_id=$1
   local client_uuid=$(get_client_id "$client_id")
@@ -116,8 +114,8 @@ add_role_mapper_to_client() {
       \"protocol\": \"openid-connect\",
       \"protocolMapper\": \"oidc-usermodel-client-role-mapper\",
       \"config\": {
-        \"clientId\": \"$REAL_CLIENT_ID\",
-        \"claim.name\": \"resource_access.$REAL_CLIENT_ID.roles\",
+        \"clientId\": \"$REAL_CLIENT\",
+        \"claim.name\": \"resource_access.$REAL_CLIENT.roles\",
         \"jsonType.label\": \"String\",
         \"access.token.claim\": \"true\",
         \"id.token.claim\": \"true\",
@@ -126,34 +124,39 @@ add_role_mapper_to_client() {
     }"
 }
 
-# -------------------------
+# ----------------------------
 # EXECUTION
-# -------------------------
+# ----------------------------
 
-echo "[*] Creating real-client..."
-create_client "$REAL_CLIENT_ID"
-
-for role in "${ROLES[@]}"; do
-  echo "[*] Creating role '$role' under real-client"
-  create_client_role "$REAL_CLIENT_ID" "$role"
-done
+echo "[*] Creating role-defining client: $REAL_CLIENT"
+create_client "$REAL_CLIENT"
 
 for client in "${CLIENTS[@]}"; do
-  echo "[*] Creating client '$client'..."
+  echo "[*] Creating token client: $client"
   create_client "$client"
-
-  echo "[*] Adding role mapper to '$client' to pull roles from real-client..."
+  echo "    Adding protocol mapper to expose $REAL_CLIENT roles"
   add_role_mapper_to_client "$client"
 done
 
-for user in "${NEW_USERS[@]}"; do
-  pass=$(random_password)
-  echo "[*] Creating user '$user' with password: $pass"
-  create_user "$user" "$pass"
-
-  for role in "${ROLES[@]}"; do
-    assign_role_to_user "$user" "$role"
-  done
+echo "[*] Creating roles in $REAL_CLIENT"
+for role in "${ROLES[@]}"; do
+  create_role "$role"
 done
 
-echo "[✔] Setup complete."
+# Users and role mapping
+declare -A USER_ROLE_MAP=(
+  [user-1]="role-1"
+  [user-2]="role-2"
+  [user-3]="role-3"
+  [user-4]="role-4"
+)
+
+echo "[*] Creating users and assigning roles"
+for user in "${!USER_ROLE_MAP[@]}"; do
+  pw=$(random_password)
+  echo "  - $user (password: $pw, role: ${USER_ROLE_MAP[$user]})"
+  create_user "$user" "$pw"
+  assign_role_to_user "$user" "${USER_ROLE_MAP[$user]}"
+done
+
+echo "[✔] All done!"
