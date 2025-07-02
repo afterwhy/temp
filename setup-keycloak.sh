@@ -35,16 +35,23 @@ get_client_id() {
   clients_json=$(curl -s -H "Authorization: Bearer $TOKEN" \
     "$KC_URL/admin/realms/$REALM/clients")
 
-  # Split array into individual objects by `},{` -> place each client on new line
-  echo "$clients_json" | tr -d '\n' | sed 's/},{/}§{/g' | tr '§' '\n' | while read -r obj; do
-    # Extract clientId from current object
-    local cid=$(echo "$obj" | grep -o '"clientId":"[^"]*"' | cut -d':' -f2 | tr -d '"')
-    if [[ "$cid" == "$search_client_id" ]]; then
-      # Extract ID from same object
-      echo "$obj" | grep -o '"id":"[^"]*"' | head -n1 | cut -d':' -f2 | tr -d '"'
-      return
-    fi
-  done
+  # Strip leading [ and trailing ] from array, replace },{ with }§{ to split
+  echo "$clients_json" \
+    | sed -E 's/^\[//' \
+    | sed -E 's/\]$//' \
+    | sed 's/},{/}§{/g' \
+    | tr '§' '\n' \
+    | while read -r obj; do
+        # Extract clientId from object
+        local cid=$(echo "$obj" | grep -o '"clientId":"[^"]*"' | cut -d':' -f2 | tr -d '"')
+        if [[ "$cid" == "$search_client_id" ]]; then
+          # Extract id from object
+          echo "$obj" | grep -o '"id":"[^"]*"' | head -n1 | cut -d':' -f2 | tr -d '"'
+          return 0
+        fi
+      done
+
+  return 1  # not found
 }
 
 # Create client with random secret
