@@ -28,9 +28,23 @@ TOKEN=$(get_admin_token)
 
 # Get client UUID by clientId
 get_client_id() {
-  local client_id=$1
-  curl -s -H "Authorization: Bearer $TOKEN" \
-    "$KC_URL/admin/realms/$REALM/clients?clientId=$client_id" | jq -r '.[0].id'
+  local search_client_id="$1"
+  local clients_json
+
+  # Get all clients (JSON array)
+  clients_json=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$KC_URL/admin/realms/$REALM/clients")
+
+  # Split array into individual objects by `},{` -> place each client on new line
+  echo "$clients_json" | tr -d '\n' | sed 's/},{/}§{/g' | tr '§' '\n' | while read -r obj; do
+    # Extract clientId from current object
+    local cid=$(echo "$obj" | grep -o '"clientId":"[^"]*"' | cut -d':' -f2 | tr -d '"')
+    if [[ "$cid" == "$search_client_id" ]]; then
+      # Extract ID from same object
+      echo "$obj" | grep -o '"id":"[^"]*"' | head -n1 | cut -d':' -f2 | tr -d '"'
+      return
+    fi
+  done
 }
 
 # Create client with random secret
