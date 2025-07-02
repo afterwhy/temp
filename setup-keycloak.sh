@@ -147,12 +147,15 @@ add_role_mapper_to_client() {
 
 # Remove default realm roles from user
 remove_default_realm_roles_from_user() {
-  local username=$1
-  local user_id=$(get_user_id "$username")
-  local default_role_name="default-roles-$REALM"
-  local default_role_id=$(curl -s -H "Authorization: Bearer $TOKEN" "$KC_URL/admin/realms/$REALM/roles/$default_role_name" | grep -oP '"id":"\K[^"]+')
+  username=$1
+  user_id=$(get_user_id "$username")
+  default_role_name="default-roles-$REALM"
+  # Get default role ID
+  default_role_id=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$KC_URL/admin/realms/$REALM/roles/$default_role_name" | \
+    grep '"id":"' | sed -E 's/.*"id":"\([^"]\+\)".*/\1/')
 
-  # Remove the default role from user realm mappings
+  # Remove the default role from user's realm role mappings
   curl -s -X DELETE -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
     -d "[{\"id\":\"$default_role_id\",\"name\":\"$default_role_name\"}]" \
     "$KC_URL/admin/realms/$REALM/users/$user_id/role-mappings/realm"
@@ -160,41 +163,58 @@ remove_default_realm_roles_from_user() {
 
 # Remove unwanted default client scopes from external clients
 remove_default_client_scopes() {
-  local client_id=$1
-  local client_uuid=$(get_client_uuid "$client_id")
+  client_id=$1
+  client_uuid=$(get_client_uuid "$client_id")
 
   # List default client scopes assigned
-  scopes=$(curl -s -H "Authorization: Bearer $TOKEN" "$KC_URL/admin/realms/$REALM/clients/$client_uuid/default-client-scopes" | grep -oP '"id":"\K[^"]+')
+  scopes=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$KC_URL/admin/realms/$REALM/clients/$client_uuid/default-client-scopes" | \
+    grep '"id":"' | sed -E 's/.*"id":"\([^"]\+\)".*/\1/')
 
   for scope_id in $scopes; do
     # Get scope name
-    scope_name=$(curl -s -H "Authorization: Bearer $TOKEN" "$KC_URL/admin/realms/$REALM/client-scopes/$scope_id" | grep -oP '"name":"\K[^"]+')
-    # Remove scopes like profile, roles, offline_access, etc.
-    if [[ "$scope_name" =~ ^(profile|roles|offline_access|email)$ ]]; then
-      curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
-        "$KC_URL/admin/realms/$REALM/clients/$client_uuid/default-client-scopes/$scope_id"
-      echo "Removed default client scope $scope_name from $client_id"
-    fi
+    scope_name=$(curl -s -H "Authorization: Bearer $TOKEN" \
+      "$KC_URL/admin/realms/$REALM/client-scopes/$scope_id" | \
+      grep '"name":"' | sed -E 's/.*"name":"\([^"]\+\)".*/\1/')
+
+    case "$scope_name" in
+      profile|roles|offline_access|email)
+        curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+          "$KC_URL/admin/realms/$REALM/clients/$client_uuid/default-client-scopes/$scope_id"
+        echo "Removed default client scope $scope_name from $client_id"
+        ;;
+      *)
+        # not matched, do nothing
+        ;;
+    esac
   done
 }
 
-# Remove default protocol mappers on the account client that add those unwanted roles
+# Remove default protocol mappers on the account client that add unwanted roles
 remove_account_client_role_mappers() {
-  local account_client_id="account"
-  local account_client_uuid=$(get_client_uuid "$account_client_id")
+  account_client_id="account"
+  account_client_uuid=$(get_client_uuid "$account_client_id")
 
-  mappers=$(curl -s -H "Authorization: Bearer $TOKEN" "$KC_URL/admin/realms/$REALM/clients/$account_client_uuid/protocol-mappers/models")
+  mappers=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "$KC_URL/admin/realms/$REALM/clients/$account_client_uuid/protocol-mappers/models")
 
-  # We target mappers with names like manage-account-links, view-profile, manage-account or related
-  # This is a simplification; adjust as needed based on your Keycloak instance
+  # Extract all mapper IDs
+  echo "$mappers" | grep '"id":"' | sed -E 's/.*"id":"\([^"]\+\)".*/\1/' | while read -r mapper_id; do
+    mapper_json=$(curl -s -H "Authorization: Bearer $TOKEN" \
+      "$KC_URL/admin/realms/$REALM/clients/$account_client_uuid/protocol-mappers/models/$mapper_id")
 
-  echo "$mappers" | grep -oP '"id":"\K[^"]+' | while read -r mapper_id; do
-    mapper_name=$(curl -s -H "Authorization: Bearer $TOKEN" "$KC_URL/admin/realms/$REALM/clients/$account_client_uuid/protocol-mappers/models/$mapper_id" | grep -oP '"name":"\K[^"]+')
-    if [[ "$mapper_name" =~ ^(manage-account-links|view-profile|manage-account|account)$ ]]; then
-      curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
-        "$KC_URL/admin/realms/$REALM/clients/$account_client_uuid/protocol-mappers/models/$mapper_id"
-      echo "Deleted mapper $mapper_name from account client"
-    fi
+    mapper_name=$(echo "$mapper_json" | grep '"name":"' | sed -E 's/.*"name":"\([^"]\+\)".*/\1/')
+
+    case "$mapper_name" in
+      manage-account-links|view-profile|manage-account|account)
+        curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+          "$KC_URL/admin/realms/$REALM/clients/$account_client_uuid/protocol-mappers/models/$mapper_id"
+        echo "Deleted mapper $mapper_name from account client"
+        ;;
+      *)
+        # Not matched, do nothing
+        ;;
+    esac
   done
 }
 
