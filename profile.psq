@@ -1,0 +1,6 @@
+$OutputEncoding = [System.Text.UTF8Encoding]::new()  
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()  
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'  
+$PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'  
+$PSDefaultParameterValues['Export-Csv:Encoding'] = 'utf8'  
+chcp 65001 > nul
